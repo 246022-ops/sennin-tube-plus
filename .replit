@@ -8,5 +8,5 @@ channel = "stable-23_11"
 run = ["python", "main.py"]
 
 [[ports]]
-localPort = 8000
+localPort = 80000
 externalPort = 80
