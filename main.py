@@ -10,26 +10,50 @@ from datetime import datetime
 
 app = FastAPI()
 
-# テンプレートの設定
 templates = Jinja2Templates(directory="templates")
 templates.env.add_extension('jinja2.ext.do')
 
-# 使用するInvidiousインスタンスのリスト
 INVIDIOUS_INSTANCES = [
+    'https://cal1.iv.ggtyler.dev/',
+    'https://eu-proxy.poketube.fun/',
+    'https://id.420129.xyz/',
     'https://inv.nadeko.net/',
-    'https://invidious.f5.si/',
-    'https://invidious.ritoge.com/',
+    'https://inv1-nadeko-net.zproxy.org/',
+    'https://inv2-nadeko-net.zproxy.org/',
+    'https://inv3-nadeko-net.zproxy.org/',
+    'https://inv4-nadeko-net.zproxy.org/',
+    'https://invid-api.poketube.fun/',
+    'https://invidious-f5-si.zproxy.org/',
+    'https://invidious.0011.lt/',
+    'https://invidious.adminforge.de/',
+    'https://invidious.darkness.service/',
+    'https://invidious.dhusch.de/',
     'https://invidious.ducks.party/',
-    'https://super8.absturztau.be/',
-    'https://invidious.darkness.services/',
-    'https://yt.omada.cafe/',
-    'https://iv.melmac.space/',
+    'https://invidious.einfachzocken.eu/',
+    'https://invidious.esmailelbob.xyz/',
+    'https://invidious.f5.si/',
+    'https://invidious.jing.rocks/',
+    'https://invidious.lunivers.trade/',
+    'https://invidious.nerdvpn.de/',
+    'https://invidious.nikkosphere.com/',
+    'https://invidious.perennialte.ch/',
+    'https://invidious.private.coffee/',
+    'https://invidious.projectsegfau.lt/',
+    'https://invidious.reallyaweso.me/',
+    'https://iv.datura.network/',
     'https://iv.duti.dev/',
+    'https://iv.melmac.space/',
+    'https://lekker.gay/',
+    'https://nyc1.iv.ggtyler.dev/',
+    'https://pol1.iv.ggtyler.dev/',
+    'https://super8.absturztau.be/',
+    'https://usa-proxy2.poketube.fun/',
+    'https://yewtu.be/',
+    'https://youtube.mosesmang.com/',
+    'https://yt.omada.cafe/',
 ]
 
-# 高速化のためにAsyncClientをグローバルに保持（コネクションプーリングとリミットの最適化）
-# max_connectionsを増やし、keepaliveを長めに設定
-limits = httpx.Limits(max_connections=200, max_keepalive_connections=50)
+limits = httpx.Limits(max_connections=300, max_keepalive_connections=100)
 client_session = httpx.AsyncClient(timeout=10.0, limits=limits, follow_redirects=True)
 
 async def fetch_invidious(endpoint: str, params: dict = None, force_instance: str = None):
@@ -43,7 +67,7 @@ async def fetch_invidious(endpoint: str, params: dict = None, force_instance: st
     for instance in instances:
         try:
             url = f"{instance.rstrip('/')}/api/v1{endpoint}"
-            response = await client_session.get(url, params=params)
+            response = await client_session.get(url, params=params, timeout=6.0)
             response.raise_for_status()
             return response.json()
         except (httpx.TimeoutException, httpx.HTTPStatusError, Exception) as e:
@@ -51,8 +75,6 @@ async def fetch_invidious(endpoint: str, params: dict = None, force_instance: st
             continue
     
     raise last_error if last_error else Exception("All instances failed")
-
-## --- ルーティング ---
 
 @app.get("/", response_class=HTMLResponse)
 async def index(request: Request):
@@ -68,21 +90,19 @@ async def search(request: Request, q: str = Query(...), page: int = 1, type: str
         if force_instance:
             data = await fetch_invidious("/search", params, force_instance=force_instance)
         else:
-            # 高速化：上位3つのインスタンスに同時リクエストを送り、最速のレスポンスを採用する
             instances = list(INVIDIOUS_INSTANCES)
             random.shuffle(instances)
-            target_instances = instances[:3]
+            target_instances = instances[:4]
             
             async def fetch_task(instance):
                 url = f"{instance.rstrip('/')}/api/v1/search"
-                resp = await client_session.get(url, params=params, timeout=5.0)
+                resp = await client_session.get(url, params=params, timeout=4.0)
                 resp.raise_for_status()
                 return resp.json()
 
             tasks = [asyncio.create_task(fetch_task(inst)) for inst in target_instances]
             done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
             
-            # 完了したタスクから結果を取得。失敗した場合は他のタスクを待つかフォールバック
             data = None
             for task in done:
                 try:
@@ -94,10 +114,9 @@ async def search(request: Request, q: str = Query(...), page: int = 1, type: str
             for task in pending:
                 task.cancel()
             
-            if data is None: # 投機的実行がすべて失敗した場合は通常の順次フェッチへ
+            if data is None:
                 data = await fetch_invidious("/search", params)
 
-        # 取得処理の高速化: 必要なデータのみをスライスして構築
         results = [{
             "type": item.get("type"),
             "videoId": item.get("videoId"),
@@ -130,7 +149,6 @@ async def search(request: Request, q: str = Query(...), page: int = 1, type: str
 @app.get("/shorts/{v}", response_class=HTMLResponse)
 async def shorts_player(request: Request, v: str, force_instance: str = Query(None)):
     try:
-        # 並列実行
         video_task = fetch_invidious(f"/videos/{v}", force_instance=force_instance)
         comment_task = fetch_invidious(f"/comments/{v}", force_instance=force_instance)
         video_data, comment_data = await asyncio.gather(video_task, comment_task, return_exceptions=True)
@@ -163,18 +181,17 @@ async def shorts_player(request: Request, v: str, force_instance: str = Query(No
 @app.get("/watch", response_class=HTMLResponse)
 async def watch(request: Request, v: str = Query(...), force_instance: str = Query(None)):
     try:
-        # 高速化: 投機的実行を使用して、最も速いインスタンスからデータを取得
         async def fetch_video_speculative(vid):
             if force_instance:
                 return await fetch_invidious(f"/videos/{vid}", force_instance=force_instance)
             
             instances = list(INVIDIOUS_INSTANCES)
             random.shuffle(instances)
-            target_instances = instances[:3]
+            target_instances = instances[:4]
             
             async def task(instance):
                 url = f"{instance.rstrip('/')}/api/v1/videos/{vid}"
-                resp = await client_session.get(url, timeout=5.0)
+                resp = await client_session.get(url, timeout=4.0)
                 resp.raise_for_status()
                 return resp.json()
 
@@ -191,7 +208,6 @@ async def watch(request: Request, v: str = Query(...), force_instance: str = Que
             if res is None: res = await fetch_invidious(f"/videos/{vid}")
             return res
 
-        # 動画データとコメントデータを並列で取得
         video_task = fetch_video_speculative(v)
         comment_task = fetch_invidious(f"/comments/{v}", force_instance=force_instance)
         video_data, comment_data = await asyncio.gather(video_task, comment_task, return_exceptions=True)
@@ -200,7 +216,6 @@ async def watch(request: Request, v: str = Query(...), force_instance: str = Que
         
         adaptive = video_data.get("adaptiveFormats", [])
         
-        # 音声URLの選定を高速化（日本語のみに限定）
         audio_url = None
         for f in adaptive:
             if "audio" in f.get("type", ""):
@@ -210,7 +225,6 @@ async def watch(request: Request, v: str = Query(...), force_instance: str = Que
 
         format_streams = video_data.get("formatStreams", [])
         
-        # リスト内包表記でstream_urlsを効率的に構築
         stream_urls = [{
             "url": fmt.get("url"),
             "resolution": fmt.get("qualityLabel"),
@@ -218,7 +232,6 @@ async def watch(request: Request, v: str = Query(...), force_instance: str = Que
             "audioUrl": ""
         } for fmt in format_streams]
         
-        # webm/videoOnlyを統合
         stream_urls.extend({
             "url": fmt.get("url"),
             "resolution": fmt.get("qualityLabel"),
@@ -226,11 +239,9 @@ async def watch(request: Request, v: str = Query(...), force_instance: str = Que
             "audioUrl": audio_url
         } for fmt in adaptive if "video" in fmt.get("type", "") and "webm" in fmt.get("container", ""))
 
-        # 優先ビデオURLの取得
         video_urls = [fmt.get("url") for fmt in format_streams] or \
                      [fmt.get("url") for fmt in adaptive if "video" in fmt.get("type", "")]
 
-        # 推奨動画のリスト構築
         recommended = [{
             "video_id": rec.get("videoId"),
             "title": rec.get("title"),
@@ -241,10 +252,8 @@ async def watch(request: Request, v: str = Query(...), force_instance: str = Que
         author_thumbs = video_data.get("authorThumbnails", [])
         author_icon = author_thumbs[-1]["url"] if author_thumbs else ""
 
-        # 本家URL (m3u8取得用)
         youtube_url = f"https://www.youtube.com/watch?v={v}"
 
-        # レスポンス生成
         response = templates.TemplateResponse("watch.html", {
             "request": request,
             "videoid": v,
@@ -263,11 +272,9 @@ async def watch(request: Request, v: str = Query(...), force_instance: str = Que
             "youtube_url": youtube_url
         })
 
-        # 履歴処理
         try:
             history_json = request.cookies.get("history", "[]")
             history = json.loads(history_json)
-            # 重複排除
             history = [item for item in history if item.get("videoId") != v]
             history.append({
                 "videoId": v,
@@ -323,7 +330,6 @@ async def playlist(request: Request, list: str = Query(...), force_instance: str
 @app.get("/channel/{ucid}", response_class=HTMLResponse)
 async def channel(request: Request, ucid: str, sort_by: str = "newest", tab: str = "videos", force_instance: str = Query(None)):
     try:
-        # 4つのAPIリクエストを完全に並列化
         tasks = [
             fetch_invidious(f"/channels/{ucid}", {"sort_by": sort_by}, force_instance=force_instance),
             fetch_invidious(f"/channels/{ucid}/shorts", force_instance=force_instance),
@@ -338,7 +344,6 @@ async def channel(request: Request, ucid: str, sort_by: str = "newest", tab: str
         playlists_data = results[2] if not isinstance(results[2], Exception) else {}
         community_data = results[3] if not isinstance(results[3], Exception) else {}
 
-        # プレイリストデータの構築
         playlists = []
         for pl in playlists_data.get("playlists", []):
             thumb = pl.get("playlistThumbnail", "")
@@ -354,7 +359,6 @@ async def channel(request: Request, ucid: str, sort_by: str = "newest", tab: str
         author_name = channel_data.get("author")
         author_icon = channel_data.get("authorThumbnails", [{"url": ""}])[-1]["url"]
 
-        # コミュニティ投稿の構築
         community = [{
             "id": post.get("commentId", ""),
             "content": post.get("contentHtml", "").replace("\n", "<br>"),
@@ -389,7 +393,7 @@ async def suggest(keyword: str):
     random.shuffle(instances)
     for instance in instances:
         try:
-            resp = await client_session.get(f"{instance.rstrip('/')}/api/v1/search/suggestions", params={"q": keyword}, timeout=2.0)
+            resp = await client_session.get(f"{instance.rstrip('/')}/api/v1/search/suggestions", params={"q": keyword}, timeout=1.5)
             if resp.status_code == 200:
                 return resp.json().get("suggestions", [])
         except: continue
@@ -399,7 +403,7 @@ async def suggest(keyword: str):
 async def proxy_thumb(v: str):
     thumb_url = f"https://i.ytimg.com/vi/{v}/mqdefault.jpg"
     try:
-        resp = await client_session.get(thumb_url, timeout=5.0)
+        resp = await client_session.get(thumb_url, timeout=4.0)
         return Response(content=resp.content, media_type="image/jpeg")
     except: return Response(status_code=404)
 
@@ -428,7 +432,7 @@ async def read_status(request: Request):
     async def check_instance(instance):
         start_time = asyncio.get_event_loop().time()
         try:
-            resp = await client_session.get(f"{instance.rstrip('/')}/api/v1/stats", timeout=5.0)
+            resp = await client_session.get(f"{instance.rstrip('/')}/api/v1/stats", timeout=4.0)
             latency = (asyncio.get_event_loop().time() - start_time) * 1000
             if resp.status_code == 200:
                 data = resp.json()
