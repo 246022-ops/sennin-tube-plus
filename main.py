@@ -304,7 +304,8 @@ async def playlist(request: Request, list: str = Query(...), force_instance: str
 async def channel(request: Request, ucid: str, sort_by: str = "newest", tab: str = "videos", force_instance: str = Query(None)):
     try:
         tasks = [
-            fetch_invidious(f"/channels/{ucid}", {"sort_by": sort_by}, force_instance=force_instance),
+            fetch_invidious(f"/channels/{ucid}", force_instance=force_instance),
+            fetch_invidious(f"/channels/{ucid}/videos", {"sort_by": sort_by}, force_instance=force_instance),
             fetch_invidious(f"/channels/{ucid}/shorts", force_instance=force_instance),
             fetch_invidious(f"/channels/{ucid}/playlists", force_instance=force_instance),
             fetch_invidious(f"/channels/{ucid}/community", force_instance=force_instance)
@@ -313,9 +314,10 @@ async def channel(request: Request, ucid: str, sort_by: str = "newest", tab: str
         results = await asyncio.gather(*tasks, return_exceptions=True)
         
         channel_data = results[0] if not isinstance(results[0], Exception) else {}
-        shorts_data = results[1] if not isinstance(results[1], Exception) else {}
-        playlists_data = results[2] if not isinstance(results[2], Exception) else {}
-        community_data = results[3] if not isinstance(results[3], Exception) else {}
+        videos_data = results[1] if not isinstance(results[1], Exception) else {}
+        shorts_data = results[2] if not isinstance(results[2], Exception) else {}
+        playlists_data = results[3] if not isinstance(results[3], Exception) else {}
+        community_data = results[4] if not isinstance(results[4], Exception) else {}
 
         playlists = []
         for pl in playlists_data.get("playlists", []):
@@ -348,7 +350,7 @@ async def channel(request: Request, ucid: str, sort_by: str = "newest", tab: str
             "author_icon": author_icon,
             "sub_count": channel_data.get("subCountText", "非公開"),
             "description": channel_data.get("descriptionHtml", ""),
-            "videos": channel_data.get("latestVideos", []),
+            "videos": videos_data.get("videos", []),
             "shorts": shorts_data.get("videos", []),
             "playlists": playlists,
             "community": community,
