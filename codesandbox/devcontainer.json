@@ -1,5 +1,5 @@
 {
-  "name": "Sennin-Tube-Plus",
+  "name": "TokyoNOW!tube",
   "image": "python:3.11-slim",
   "features": {
     "ghcr.io/devcontainers/features/python:1": {
@@ -10,7 +10,7 @@
   "forwardPorts": [8000],
   "portsAttributes": {
     "8000": {
-      "label": "Sennin-Tube-Plus",
+      "label": "TokyoNOW!tube",
       "onAutoForward": "openPreview"
     }
   },
