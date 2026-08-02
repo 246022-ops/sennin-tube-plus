@@ -1,6 +1,7 @@
 import os
+from urllib.parse import quote
 from fastapi import FastAPI, Request, Query
-from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response, StreamingResponse
 from fastapi.templating import Jinja2Templates
 from fastapi.staticfiles import StaticFiles
 import httpx
@@ -72,6 +73,12 @@ async def fetch_invidious(endpoint: str, params: dict = None, force_instance: st
             continue
     
     raise last_error if last_error else Exception("All instances failed")
+
+
+def build_proxy_stream_url(target_url: str) -> str:
+    if not target_url:
+        return ""
+    return f"/proxy/stream?url={quote(target_url, safe='')}"
 
 @app.get("/", response_class=HTMLResponse)
 async def index(request: Request):
@@ -159,11 +166,13 @@ async def shorts_player(request: Request, v: str, force_instance: str = Query(No
             adaptive = video_data.get("adaptiveFormats", [])
             video_urls = [fmt.get("url") for fmt in adaptive if "video" in fmt.get("type", "")]
 
+        proxied_video_urls = [build_proxy_stream_url(url) for url in video_urls]
+
         return templates.TemplateResponse("short.html", {
             "request": request,
             "videoid": v,
             "video_title": video_data.get("title"),
-            "videourls": video_urls,
+            "videourls": proxied_video_urls,
             "author": video_data.get("author"),
             "view_count": video_data.get("viewCount", 0),
             "like_count": video_data.get("likeCount", 0),
@@ -223,21 +232,22 @@ async def watch(request: Request, v: str = Query(...), force_instance: str = Que
         format_streams = video_data.get("formatStreams", [])
         
         stream_urls = [{
-            "url": fmt.get("url"),
+            "url": build_proxy_stream_url(fmt.get("url")),
             "resolution": fmt.get("qualityLabel"),
             "format": "mp4/mixed",
             "audioUrl": ""
         } for fmt in format_streams]
         
         stream_urls.extend({
-            "url": fmt.get("url"),
+            "url": build_proxy_stream_url(fmt.get("url")),
             "resolution": fmt.get("qualityLabel"),
             "format": "webm/videoOnly",
-            "audioUrl": audio_url
+            "audioUrl": build_proxy_stream_url(audio_url)
         } for fmt in adaptive if "video" in fmt.get("type", "") and "webm" in fmt.get("container", ""))
 
         video_urls = [fmt.get("url") for fmt in format_streams] or \
                      [fmt.get("url") for fmt in adaptive if "video" in fmt.get("type", "")]
+        proxied_video_urls = [build_proxy_stream_url(url) for url in video_urls]
 
         recommended = [{
             "video_id": rec.get("videoId"),
@@ -255,7 +265,7 @@ async def watch(request: Request, v: str = Query(...), force_instance: str = Que
             "request": request,
             "videoid": v,
             "video_title": video_data.get("title"),
-            "videourls": video_urls,
+            "videourls": proxied_video_urls,
             "streamUrls": stream_urls,
             "author": video_data.get("author"),
             "author_id": video_data.get("authorId"),
@@ -441,6 +451,31 @@ async def suggest(keyword: str):
                 return resp.json().get("suggestions", [])
         except: continue
     return []
+
+@app.get("/proxy/stream")
+async def proxy_stream(request: Request, url: str):
+    if not url:
+        return Response(status_code=400)
+
+    headers = {
+        "User-Agent": "Mozilla/5.0",
+        "Referer": "https://www.youtube.com/"
+    }
+    range_header = request.headers.get("range")
+    if range_header:
+        headers["Range"] = range_header
+
+    try:
+        resp = await client_session.get(url, headers=headers, timeout=30.0, follow_redirects=True)
+        resp.raise_for_status()
+        content_type = resp.headers.get("content-type", "application/octet-stream")
+        response_headers = {"Content-Type": content_type}
+        content_length = resp.headers.get("content-length")
+        if content_length:
+            response_headers["Content-Length"] = content_length
+        return Response(content=resp.content, headers=response_headers, media_type=content_type, status_code=resp.status_code)
+    except Exception:
+        return Response(status_code=502)
 
 @app.get("/proxy/thumb")
 async def proxy_thumb(v: str):
