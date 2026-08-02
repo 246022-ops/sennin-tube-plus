@@ -34,7 +34,24 @@ INVIDIOUS_INSTANCES = [
 ]
 
 limits = httpx.Limits(max_connections=300, max_keepalive_connections=100)
-client_session = httpx.AsyncClient(timeout=10.0, limits=limits, follow_redirects=True)
+client_session = None
+
+
+@app.on_event("startup")
+async def startup_event():
+    global client_session
+    if client_session is None:
+        client_session = httpx.AsyncClient(timeout=10.0, limits=limits, follow_redirects=True)
+
+
+@app.on_event("shutdown")
+async def shutdown_event():
+    global client_session
+    try:
+        if client_session is not None:
+            await client_session.aclose()
+    finally:
+        client_session = None
 
 async def fetch_invidious(endpoint: str, params: dict = None, force_instance: str = None):
     if force_instance:
